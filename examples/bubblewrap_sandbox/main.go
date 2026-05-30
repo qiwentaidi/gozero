@@ -44,7 +44,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to create bubblewrap sandbox: %v", err)
 	}
-	defer bwrap.Clear()
+	defer func() {
+		_ = bwrap.Clear()
+	}()
 
 	fmt.Println("1. Running a simple command in the sandbox...")
 	result, err := bwrap.Run(ctx, "echo 'Hello from bubblewrap sandbox!'")

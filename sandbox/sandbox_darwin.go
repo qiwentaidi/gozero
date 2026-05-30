@@ -92,7 +92,7 @@ func New(ctx context.Context, config *Configuration) (Sandbox, error) {
 			confData.WriteString(string(rule.Scope) + "* ")
 		}
 		for _, arg := range rule.Args {
-			confData.WriteString(fmt.Sprintf("("+string(arg.Type)+")", arg.Params...))
+			_, _ = fmt.Fprintf(&confData, "("+string(arg.Type)+")", arg.Params...)
 		}
 		if rule.Action != "" {
 			confData.WriteString(")")

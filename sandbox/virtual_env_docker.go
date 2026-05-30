@@ -8,9 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/client"
 	"github.com/projectdiscovery/gozero/types"
 )
 
@@ -42,25 +41,25 @@ func NewDockerSandbox(ctx context.Context, config *DockerConfiguration) (*Sandbo
 	}
 
 	// Create Docker client
-	dockerClient, err := client.NewClientWithOpts(
-		client.WithAPIVersionNegotiation(),
-		client.FromEnv,
-	)
+	dockerClient, err := client.New(client.FromEnv)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create docker client: %w", err)
 	}
 
 	// Test Docker connection
-	_, err = dockerClient.Ping(ctx)
+	_, err = dockerClient.Ping(ctx, client.PingOptions{NegotiateAPIVersion: true})
 	if err != nil {
+		_ = dockerClient.Close()
 		return nil, fmt.Errorf("failed to connect to docker daemon: %w", err)
 	}
 
 	// Validate required configuration
 	if config.Image == "" {
+		_ = dockerClient.Close()
 		return nil, fmt.Errorf("docker image must be specified")
 	}
 	if config.WorkingDir == "" {
+		_ = dockerClient.Close()
 		return nil, fmt.Errorf("working directory must be specified")
 	}
 	if config.Timeout == 0 {
@@ -146,7 +145,7 @@ exec %s
 	}
 
 	// Create container
-	createResp, err := s.dockerClient.ContainerCreate(runCtx, containerConfig, hostConfig, nil, nil, "")
+	createResp, err := s.dockerClient.ContainerCreate(runCtx, client.ContainerCreateOptions{Config: containerConfig, HostConfig: hostConfig})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create container: %w", err)
 	}
@@ -154,27 +153,27 @@ exec %s
 	containerID := createResp.ID
 
 	// Start container
-	err = s.dockerClient.ContainerStart(runCtx, containerID, container.StartOptions{})
+	_, err = s.dockerClient.ContainerStart(runCtx, containerID, client.ContainerStartOptions{})
 	if err != nil {
-		_ = s.dockerClient.ContainerRemove(runCtx, containerID, container.RemoveOptions{Force: true})
+		_, _ = s.dockerClient.ContainerRemove(runCtx, containerID, client.ContainerRemoveOptions{Force: true})
 		return nil, fmt.Errorf("failed to start container: %w", err)
 	}
 
 	// Wait for container to finish
-	waitCh, errCh := s.dockerClient.ContainerWait(runCtx, containerID, container.WaitConditionNotRunning)
+	waitRes := s.dockerClient.ContainerWait(runCtx, containerID, client.ContainerWaitOptions{Condition: container.WaitConditionNotRunning})
 
 	select {
-	case err := <-errCh:
-		_ = s.dockerClient.ContainerRemove(runCtx, containerID, container.RemoveOptions{Force: true})
+	case err := <-waitRes.Error:
+		_, _ = s.dockerClient.ContainerRemove(runCtx, containerID, client.ContainerRemoveOptions{Force: true})
 		return nil, fmt.Errorf("container wait error: %w", err)
-	case result := <-waitCh:
+	case result := <-waitRes.Result:
 		// Get container logs
-		logs, err := s.dockerClient.ContainerLogs(runCtx, containerID, container.LogsOptions{
+		logs, err := s.dockerClient.ContainerLogs(runCtx, containerID, client.ContainerLogsOptions{
 			ShowStdout: true,
 			ShowStderr: true,
 		})
 		if err != nil {
-			_ = s.dockerClient.ContainerRemove(runCtx, containerID, container.RemoveOptions{Force: true})
+			_, _ = s.dockerClient.ContainerRemove(runCtx, containerID, client.ContainerRemoveOptions{Force: true})
 			return nil, fmt.Errorf("failed to get container logs: %w", err)
 		}
 		defer func() {
@@ -185,7 +184,7 @@ exec %s
 		logData := make([]byte, 1024*1024) // 1MB buffer
 		n, err := logs.Read(logData)
 		if err != nil && err.Error() != "EOF" {
-			_ = s.dockerClient.ContainerRemove(runCtx, containerID, container.RemoveOptions{Force: true})
+			_, _ = s.dockerClient.ContainerRemove(runCtx, containerID, client.ContainerRemoveOptions{Force: true})
 			return nil, fmt.Errorf("failed to read container logs: %w", err)
 		}
 
@@ -201,7 +200,7 @@ exec %s
 		}
 
 		// Always clean up container manually
-		_ = s.dockerClient.ContainerRemove(runCtx, containerID, container.RemoveOptions{Force: true})
+		_, _ = s.dockerClient.ContainerRemove(runCtx, containerID, client.ContainerRemoveOptions{Force: true})
 
 		return cmdResult, nil
 	}
@@ -265,8 +264,9 @@ func (s *SandboxDocker) Stop() error {
 
 // Clear cleans up Docker resources (containers, images, etc.)
 func (s *SandboxDocker) Clear() error {
-	// For now, we don't need to clean up anything as containers are removed after execution
-	// In the future, we could add cleanup of unused images or containers
+	if s.dockerClient != nil {
+		return s.dockerClient.Close()
+	}
 	return nil
 }
 
@@ -311,14 +311,14 @@ func parseMemoryLimit(memory string) int64 {
 // pullImageIfNeeded pulls the Docker image if it doesn't exist locally
 func (s *SandboxDocker) pullImageIfNeeded(ctx context.Context, imageName string) error {
 	// Check if image exists locally
-	_, _, err := s.dockerClient.ImageInspectWithRaw(ctx, imageName)
+	_, err := s.dockerClient.ImageInspect(ctx, imageName)
 	if err == nil {
 		// Image exists locally, no need to pull
 		return nil
 	}
 
 	// Image doesn't exist, pull it
-	reader, err := s.dockerClient.ImagePull(ctx, imageName, image.PullOptions{})
+	reader, err := s.dockerClient.ImagePull(ctx, imageName, client.ImagePullOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to pull image: %w", err)
 	}

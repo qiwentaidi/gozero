@@ -32,6 +32,7 @@ func TestNewSourceWithFile(t *testing.T) {
 	}
 	if source == nil {
 		t.Fatal("NewSourceWithFile returned nil source")
+		return
 	}
 	if source.Filename != tempFile.Name() {
 		t.Errorf("Expected filename to be %v, got %v", tempFile.Name(), source.Filename)
