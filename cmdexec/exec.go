@@ -54,6 +54,7 @@ func (c *Command) EnableDebugMode() {
 // Execute executes the command and returns the output.
 func (c *Command) Execute(ctx context.Context) (*types.Result, error) {
 	cmd := exec.CommandContext(ctx, c.Binary, c.Args...)
+	prepareCommand(cmd)
 	if len(c.Env) > 0 {
 		// by default we allow existing environment variables to be inherited
 		cmd.Env = append(cmd.Environ(), c.Env...)
